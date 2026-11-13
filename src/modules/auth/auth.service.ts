@@ -1,0 +1,171 @@
+import User from "../users/user.model.js";
+import type { RegisterInput, LoginInput } from "./auth.validation.js";
+
+import { generateAccessToken } from "../../utils/jwt.js";
+import { hashPassword, comparePassword } from "../../utils/password.js";
+import { createRefreshSession } from "./session.service.js";
+
+import { sendVerificationCode } from "./email-verification.service.js";
+import { OAuth2Client } from "google-auth-library";
+import type {
+  AuthSession,
+  AuthUser,
+  RegistrationResult,
+} from "./auth.types.js";
+
+const googleClient = new OAuth2Client();
+
+export const registerUser = async (
+  data: RegisterInput,
+): Promise<RegistrationResult> => {
+  // Vérifier si l'utilisateur existe déjà
+  const existingUser = await User.findOne({
+    email: data.email,
+  }).select("+password");
+
+  if (existingUser) {
+    throw new Error("Cette adresse e-mail est déjà utilisée");
+  }
+
+  // Hacher le mot de passe
+  const hashedPassword = await hashPassword(data.password);
+
+  // Créer le compte
+  const user = await User.create({
+    name: data.name,
+    email: data.email,
+    password: hashedPassword,
+    authProvider: "local",
+  });
+
+  await sendVerificationCode(user._id.toString());
+
+  const authUser: AuthUser = {
+    id: user._id.toString(),
+    name: user.name,
+    email: user.email,
+    avatar: user.avatar ?? null,
+    isEmailVerified: user.isEmailVerified,
+    role: user.role,
+  };
+
+  return {
+    user: authUser,
+    requiresEmailVerification: true,
+  };
+};
+
+export const loginUser = async (data: LoginInput): Promise<AuthSession> => {
+  // Rechercher l'utilisateur et récupérer son mot de passe
+  const user = await User.findOne({
+    email: data.email,
+  }).select("+password");
+
+  if (!user || !user.password) {
+    throw new Error("Identifiants incorrects");
+  }
+
+  // Vérifier le mot de passe
+  const isPasswordValid = await comparePassword(data.password, user.password);
+
+  if (!isPasswordValid) {
+    throw new Error("Identifiants incorrects");
+  }
+
+  if (!user.isEmailVerified) {
+    throw new Error("EMAIL_NOT_VERIFIED");
+  }
+
+  // Générer le token
+  const accessToken = generateAccessToken({
+    sub: user._id.toString(),
+    email: user.email,
+    role: user.role,
+  });
+  // Générer le token de rafraîchissement
+  const refreshToken = await createRefreshSession(user._id);
+
+  return {
+    user: {
+      id: user._id.toString(),
+      name: user.name,
+      email: user.email,
+      avatar: user.avatar ?? null,
+      isEmailVerified: user.isEmailVerified,
+      role: user.role,
+    },
+    accessToken,
+    refreshToken,
+  };
+};
+
+export const loginWithGoogle = async (
+  idToken: string,
+): Promise<AuthSession> => {
+  const allowedClientIds = (process.env.GOOGLE_CLIENT_IDS ?? "")
+    .split(",")
+    .map((clientId) => clientId.trim())
+    .filter(Boolean);
+
+  if (allowedClientIds.length === 0) {
+    throw new Error("GOOGLE_AUTH_NOT_CONFIGURED");
+  }
+
+  const ticket = await googleClient.verifyIdToken({
+    idToken,
+    audience: allowedClientIds,
+  });
+  const payload = ticket.getPayload();
+
+  if (!payload?.email || !payload.email_verified || !payload.sub) {
+    throw new Error("GOOGLE_IDENTITY_UNVERIFIED");
+  }
+
+  const email = payload.email.toLowerCase();
+  let user = await User.findOne({
+    $or: [{ googleId: payload.sub }, { email }],
+  });
+
+  if (user) {
+    if (user.googleId && user.googleId !== payload.sub) {
+      throw new Error("GOOGLE_ACCOUNT_CONFLICT");
+    }
+
+    user.googleId = payload.sub;
+    user.authProvider = "google";
+    user.isEmailVerified = true;
+    if (payload.name && !user.name) user.name = payload.name;
+    if (payload.picture && !user.avatar) user.avatar = payload.picture;
+    await user.save();
+  } else {
+    user = await User.create({
+      name: payload.name || email.split("@")[0],
+      email,
+      googleId: payload.sub,
+      avatar: payload.picture,
+      isEmailVerified: true,
+      authProvider: "google",
+      password: undefined,
+    });
+  }
+
+  const accessToken = generateAccessToken({
+    sub: user._id.toString(),
+    email: user.email,
+    role: user.role,
+  });
+  const refreshToken = await createRefreshSession(user._id);
+
+  return {
+    user: {
+      id: user._id.toString(),
+      name: user.name,
+      email: user.email,
+      avatar: user.avatar ?? null,
+      isEmailVerified: user.isEmailVerified,
+      role: user.role,
+    },
+    accessToken,
+    refreshToken,
+  };
+};
