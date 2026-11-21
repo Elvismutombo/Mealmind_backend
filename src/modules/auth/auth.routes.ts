@@ -11,7 +11,7 @@ import {
   forgotPassword,
   resetPassword,
 } from "./auth.controller.js";
-import rateLimit from "express-rate-limit";
+import { rateLimit } from "express-rate-limit";
 
 const router = Router();
 const passwordResetLimiter = rateLimit({

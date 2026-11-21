@@ -1,22 +1,38 @@
 import nodemailer from "nodemailer";
 
-const requiredEnv = ["SMTP_HOST", "SMTP_USER", "SMTP_PASS", "SMTP_FROM"];
+class EmailConfigurationError extends Error {
+  readonly statusCode = 503;
 
-for (const key of requiredEnv) {
-  if (!process.env[key]) {
-    throw new Error(`${key} is missing from environment variables`);
+  constructor(variable: string) {
+    super(`${variable} is missing from environment variables`);
+    this.name = "EmailConfigurationError";
   }
 }
 
-const transporter = nodemailer.createTransport({
-  host: process.env.SMTP_HOST,
-  port: Number(process.env.SMTP_PORT) || 587,
-  secure: process.env.SMTP_SECURE === "true",
-  auth: {
-    user: process.env.SMTP_USER,
-    pass: process.env.SMTP_PASS,
-  },
-});
+let transporter: ReturnType<typeof nodemailer.createTransport> | undefined;
+
+const requiredEnvValue = (name: string): string => {
+  const value = process.env[name];
+  if (!value) {
+    throw new EmailConfigurationError(name);
+  }
+  return value;
+};
+
+const getTransporter = () => {
+  if (!transporter) {
+    transporter = nodemailer.createTransport({
+      host: requiredEnvValue("SMTP_HOST"),
+      port: Number(process.env.SMTP_PORT) || 587,
+      secure: process.env.SMTP_SECURE === "true",
+      auth: {
+        user: requiredEnvValue("SMTP_USER"),
+        pass: requiredEnvValue("SMTP_PASS"),
+      },
+    });
+  }
+  return transporter;
+};
 
 export const sendEmail = async (
   to: string,
@@ -24,13 +40,13 @@ export const sendEmail = async (
   html: string,
   text?: string,
 ): Promise<void> => {
-  await transporter.sendMail({
-    from: process.env.SMTP_FROM,
+  await getTransporter().sendMail({
+    from: requiredEnvValue("SMTP_FROM"),
     to,
     subject,
     text: text || html.replace(/<[^>]+>/g, ""),
     html,
-    replyTo: process.env.SMTP_FROM,
+    replyTo: requiredEnvValue("SMTP_FROM"),
     headers: {
       "X-Entity-Ref-ID": crypto.randomUUID(),
     },
@@ -39,7 +55,7 @@ export const sendEmail = async (
 
 export const verifyEmailTransport = async (): Promise<boolean> => {
   try {
-    await transporter.verify();
+    await getTransporter().verify();
     console.log("SMTP connection verified successfully.");
     return true;
   } catch (error) {

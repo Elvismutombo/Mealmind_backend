@@ -4,7 +4,21 @@ import ShoppingList from "./shopping-list.model.js";
 export const getShoppingList = async (userId: string) => {
   let list = await ShoppingList.findOne({ userId });
   if (!list) {
-    list = await ShoppingList.create({ userId, items: [] });
+    try {
+      list = await ShoppingList.create({ userId, items: [] });
+    } catch (error) {
+      if (
+        typeof error !== "object" ||
+        error === null ||
+        !("code" in error) ||
+        error.code !== 11000
+      ) {
+        throw error;
+      }
+
+      list = await ShoppingList.findOne({ userId });
+      if (!list) throw error;
+    }
   }
   return list;
 };

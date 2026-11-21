@@ -1,3 +1,5 @@
+import { translateTextsToFrench } from "../../config/gemini.js";
+
 type Meal = Record<string, unknown>;
 
 interface CacheEntry {
@@ -137,24 +139,32 @@ const fetchMealDb = async (endpoint: string, query: Record<string, string>) => {
   });
 };
 
-const translateInstructions = async (text: string): Promise<string> => {
-  const trimmed = text.trim();
-  if (trimmed.length === 0) return "";
+const translateInstructionsBatch = async (texts: string[]): Promise<string[]> => {
+  const normalizedTexts = texts.map((text) => text.trim());
+  const translations = new Map<string, string>();
+  const uncachedTexts = [
+    ...new Set(normalizedTexts.filter((text) => text.length > 0)),
+  ].filter((text) => {
+    const cached = translatedTextCache.get(text);
+    if (cached && cached.expiresAt > Date.now()) {
+      translations.set(text, cached.value as string);
+      return false;
+    }
+    if (cached) translatedTextCache.delete(text);
+    return true;
+  });
 
-  const cached = translatedTextCache.get(trimmed);
-  if (cached && cached.expiresAt > Date.now()) {
-    return cached.value as string;
+  if (uncachedTexts.length === 0) {
+    return normalizedTexts.map((text) => translations.get(text) ?? "");
   }
 
   const deeplKey = process.env.DEEPL_AUTH_KEY;
   const googleKey = process.env.GOOGLE_TRANSLATE_API_KEY;
-  let translation: string | undefined;
+  let newTranslations: string[];
 
   if (deeplKey) {
-    const form = new URLSearchParams({
-      text: trimmed,
-      target_lang: "FR",
-    });
+    const form = new URLSearchParams({ target_lang: "FR" });
+    for (const text of uncachedTexts) form.append("text", text);
     const response = await fetch(
       process.env.DEEPL_API_URL ??
         "https://api-free.deepl.com/v2/translate",
@@ -172,16 +182,18 @@ const translateInstructions = async (text: string): Promise<string> => {
     const payload = (await response.json()) as {
       translations?: Array<{ text?: string }>;
     };
-    translation = payload.translations?.[0]?.text;
+    newTranslations = payload.translations?.map((value) => value.text ?? "") ?? [];
   } else if (googleKey) {
     const url = new URL(
       "https://translation.googleapis.com/language/translate/v2",
     );
     url.searchParams.set("key", googleKey);
-    url.searchParams.set("q", trimmed);
-    url.searchParams.set("target", "fr");
-    url.searchParams.set("format", "text");
+    const form = new URLSearchParams({ target: "fr", format: "text" });
+    for (const text of uncachedTexts) form.append("q", text);
     const response = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: form,
       signal: AbortSignal.timeout(12000),
     });
     if (!response.ok) {
@@ -190,35 +202,45 @@ const translateInstructions = async (text: string): Promise<string> => {
     const payload = (await response.json()) as {
       data?: { translations?: Array<{ translatedText?: string }> };
     };
-    translation = payload.data?.translations?.[0]?.translatedText;
+    newTranslations =
+      payload.data?.translations?.map((value) => value.translatedText ?? "") ??
+      [];
+  } else if (process.env.GEMINI_API_KEY) {
+    newTranslations = await translateTextsToFrench(uncachedTexts);
   } else {
     throw new Error("MEAL_TRANSLATION_NOT_CONFIGURED");
   }
 
-  if (!translation) throw new Error("MEAL_TRANSLATION_FAILED");
-  if (translatedTextCache.size >= MAX_TRANSLATED_TEXT_ENTRIES) {
-    const oldestKey = translatedTextCache.keys().next().value;
-    if (oldestKey !== undefined) translatedTextCache.delete(oldestKey);
+  if (
+    newTranslations.length !== uncachedTexts.length ||
+    newTranslations.some((translation) => translation.trim().length === 0)
+  ) {
+    throw new Error("MEAL_TRANSLATION_FAILED");
   }
-  translatedTextCache.set(trimmed, {
-    value: translation,
-    expiresAt: Date.now() + CACHE_DURATION,
-  });
-  return translation;
+
+  for (const [index, text] of uncachedTexts.entries()) {
+    if (translatedTextCache.size >= MAX_TRANSLATED_TEXT_ENTRIES) {
+      const oldestKey = translatedTextCache.keys().next().value;
+      if (oldestKey !== undefined) translatedTextCache.delete(oldestKey);
+    }
+    const translation = newTranslations[index].trim();
+    translations.set(text, translation);
+    translatedTextCache.set(text, {
+      value: translation,
+      expiresAt: Date.now() + CACHE_DURATION,
+    });
+  }
+
+  return normalizedTexts.map((text) => translations.get(text) ?? "");
 };
 
-const mapMeal = async (
-  meal: Meal,
-  options: { translateInstructions: boolean },
-): Promise<Meal> => {
+const mapMeal = (meal: Meal, translatedInstructions = ""): Meal => {
   const mapped: Meal = {
     idMeal: asString(meal.idMeal),
     strMeal: asString(meal.strMeal),
     strCategory: translateLabel(meal.strCategory, categoryTranslations),
     strArea: translateLabel(meal.strArea, areaTranslations),
-    strInstructions: options.translateInstructions
-      ? await translateInstructions(asString(meal.strInstructions))
-      : "",
+    strInstructions: translatedInstructions,
     strMealThumb: asString(meal.strMealThumb) || null,
     strYoutube: asString(meal.strYoutube) || null,
     strTags: asString(meal.strTags) || null,
@@ -244,30 +266,18 @@ export const searchExternalMeals = async (
   const query = filters.query?.trim();
   if (query) {
     const payload = await fetchMealDb("search.php", { s: query });
-    return Promise.all(
-      mealsFrom(payload).map((meal) =>
-        mapMeal(meal, { translateInstructions: true }),
-      ),
-    );
+    return mealsFrom(payload).map((meal) => mapMeal(meal));
   }
 
   if (filters.category) {
     const payload = await fetchMealDb("filter.php", {
       c: toEnglishFilter(filters.category, categoryTranslations),
     });
-    return Promise.all(
-      mealsFrom(payload).map((meal) =>
-        mapMeal(
-          {
-            ...meal,
-            strCategory: toEnglishFilter(
-              filters.category!,
-              categoryTranslations,
-            ),
-          },
-          { translateInstructions: false },
-        ),
-      ),
+    return mealsFrom(payload).map((meal) =>
+      mapMeal({
+        ...meal,
+        strCategory: toEnglishFilter(filters.category!, categoryTranslations),
+      }),
     );
   }
 
@@ -275,16 +285,11 @@ export const searchExternalMeals = async (
     const payload = await fetchMealDb("filter.php", {
       a: toEnglishFilter(filters.area, areaTranslations),
     });
-    return Promise.all(
-      mealsFrom(payload).map((meal) =>
-        mapMeal(
-          {
-            ...meal,
-            strArea: toEnglishFilter(filters.area!, areaTranslations),
-          },
-          { translateInstructions: false },
-        ),
-      ),
+    return mealsFrom(payload).map((meal) =>
+      mapMeal({
+        ...meal,
+        strArea: toEnglishFilter(filters.area!, areaTranslations),
+      }),
     );
   }
 
@@ -292,19 +297,11 @@ export const searchExternalMeals = async (
     const payload = await fetchMealDb("filter.php", {
       i: filters.ingredient.trim(),
     });
-    return Promise.all(
-      mealsFrom(payload).map((meal) =>
-        mapMeal(meal, { translateInstructions: false }),
-      ),
-    );
+    return mealsFrom(payload).map((meal) => mapMeal(meal));
   }
 
   const payload = await fetchMealDb("search.php", { f: "a" });
-  return Promise.all(
-    mealsFrom(payload).map((meal) =>
-      mapMeal(meal, { translateInstructions: true }),
-    ),
-  );
+  return mealsFrom(payload).map((meal) => mapMeal(meal));
 };
 
 export const getExternalMealCategories = async (): Promise<Meal[]> => {
@@ -324,5 +321,8 @@ export const getExternalMeal = async (id: string): Promise<Meal> => {
   const payload = await fetchMealDb("lookup.php", { i: id });
   const meal = mealsFrom(payload)[0];
   if (!meal) throw new Error("MEAL_NOT_FOUND");
-  return mapMeal(meal, { translateInstructions: true });
+  const [translation] = await translateInstructionsBatch([
+    asString(meal.strInstructions),
+  ]);
+  return mapMeal(meal, translation);
 };

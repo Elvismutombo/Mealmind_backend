@@ -11,7 +11,10 @@ const getStatusCode = (error: unknown): number | undefined => {
   return typeof error.status === "number" ? error.status : undefined;
 };
 
-export const generateRecipeText = async (prompt: string): Promise<string> => {
+const generateText = async (
+  prompt: string,
+  options: { responseMimeType?: string; temperature: number },
+): Promise<string> => {
   if (!apiKey) {
     throw new Error("GEMINI_NOT_CONFIGURED");
   }
@@ -23,8 +26,10 @@ export const generateRecipeText = async (prompt: string): Promise<string> => {
         model: process.env.GEMINI_MODEL || "gemini-3.5-flash-lite",
         contents: prompt,
         config: {
-          responseMimeType: "application/json",
-          temperature: 0.7,
+          ...(options.responseMimeType
+            ? { responseMimeType: options.responseMimeType }
+            : {}),
+          temperature: options.temperature,
         },
       });
 
@@ -61,4 +66,46 @@ export const generateRecipeText = async (prompt: string): Promise<string> => {
   }
 
   throw new Error("GEMINI_TEMPORARILY_UNAVAILABLE");
+};
+
+export const generateRecipeText = (prompt: string): Promise<string> =>
+  generateText(prompt, {
+    responseMimeType: "application/json",
+    temperature: 0.7,
+  });
+
+export const translateTextsToFrench = async (
+  texts: string[],
+): Promise<string[]> => {
+  if (texts.length === 0) return [];
+
+  const response = await generateText(
+    `Translate each recipe instruction into French. Preserve meaning, quantities, temperatures, and step order. Return only JSON in the form {"translations":["..."]}, with exactly one translation per input and in the same order. Inputs: ${JSON.stringify(texts)}`,
+    {
+      responseMimeType: "application/json",
+      temperature: 0,
+    },
+  );
+  let payload: unknown;
+  try {
+    payload = JSON.parse(response);
+  } catch {
+    throw new Error("GEMINI_INVALID_TRANSLATION_RESPONSE");
+  }
+
+  if (
+    typeof payload !== "object" ||
+    payload === null ||
+    !("translations" in payload) ||
+    !Array.isArray(payload.translations) ||
+    payload.translations.length !== texts.length ||
+    payload.translations.some(
+      (translation) =>
+        typeof translation !== "string" || translation.trim().length === 0,
+    )
+  ) {
+    throw new Error("GEMINI_INVALID_TRANSLATION_RESPONSE");
+  }
+
+  return payload.translations.map((translation: string) => translation.trim());
 };
