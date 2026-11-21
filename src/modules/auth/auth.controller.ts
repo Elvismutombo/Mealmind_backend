@@ -15,6 +15,7 @@ import {
 import {
   sendVerificationCode,
   verifyEmailCode,
+  verifyEmailCodeByEmail,
 } from "./email-verification.service.js";
 import { resendPendingRegistrationCode } from "./pending-registration.service.js";
 
@@ -41,7 +42,7 @@ export const register = async (req: Request, res: Response) => {
 
     return res.status(201).json({
       success: true,
-      message: "Compte créé avec succès",
+      message: "Code de vérification envoyé",
       data: result,
     });
   } catch (error) {
@@ -263,15 +264,31 @@ export const verifyEmail = async (req: Request, res: Response) => {
   }
 
   try {
-    const result = validation.data.email
-      ? await verifyPendingRegistrationAndCreateSession(
+    let result;
+    if (validation.data.email) {
+      try {
+        result = await verifyPendingRegistrationAndCreateSession(
           validation.data.email,
           validation.data.code,
-        )
-      : await verifyEmailCode(
-          validation.data.userId!,
+        );
+      } catch (error) {
+        if (
+          !(error instanceof Error) ||
+          error.message !== "PENDING_REGISTRATION_NOT_FOUND"
+        ) {
+          throw error;
+        }
+        result = await verifyEmailCodeByEmail(
+          validation.data.email,
           validation.data.code,
         );
+      }
+    } else {
+      result = await verifyEmailCode(
+        validation.data.userId!,
+        validation.data.code,
+      );
+    }
 
     return res.status(200).json({
       success: true,

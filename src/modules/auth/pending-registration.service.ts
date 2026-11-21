@@ -62,24 +62,36 @@ export const createPendingRegistration = async (data: {
 export const resendPendingRegistrationCode = async (
   email: string,
 ): Promise<boolean> => {
-  const pending = await PendingRegistration.findOne({ email });
-  if (!pending) return false;
-
   const now = new Date();
-  if (pending.expiresAt <= now) {
-    await PendingRegistration.deleteOne({ _id: pending._id });
-    return false;
-  }
-  if (now.getTime() - pending.lastSentAt.getTime() < RESEND_DELAY) {
+  const resendAfter = new Date(now.getTime() - RESEND_DELAY);
+  const code = randomInt(100000, 1000000).toString();
+  const pending = await PendingRegistration.findOneAndUpdate(
+    {
+      email,
+      expiresAt: { $gt: now },
+      lastSentAt: { $lte: resendAfter },
+    },
+    {
+      $set: {
+        otpHash: hashCode(code),
+        expiresAt: new Date(now.getTime() + REGISTRATION_DURATION),
+        attempts: 0,
+        lastSentAt: now,
+      },
+    },
+    { new: true },
+  );
+
+  if (!pending) {
+    const existing = await PendingRegistration.findOne({ email });
+    if (!existing || existing.expiresAt <= now) {
+      if (existing) {
+        await PendingRegistration.deleteOne({ _id: existing._id });
+      }
+      return false;
+    }
     throw new Error("OTP_RESEND_TOO_SOON");
   }
-
-  const code = randomInt(100000, 1000000).toString();
-  pending.otpHash = hashCode(code);
-  pending.expiresAt = new Date(now.getTime() + REGISTRATION_DURATION);
-  pending.attempts = 0;
-  pending.lastSentAt = now;
-  await pending.save();
 
   try {
     await sendRegistrationCode(email, code);
@@ -109,10 +121,13 @@ export const verifyPendingRegistration = async (
     throw new Error("OTP_MAX_ATTEMPTS");
   }
   if (!codeMatches(code, pending.otpHash)) {
-    await PendingRegistration.updateOne(
-      { _id: pending._id, attempts: pending.attempts },
+    const updateResult = await PendingRegistration.updateOne(
+      { _id: pending._id, attempts: { $lt: MAX_ATTEMPTS } },
       { $inc: { attempts: 1 } },
     );
+    if (updateResult.modifiedCount !== 1) {
+      throw new Error("OTP_MAX_ATTEMPTS");
+    }
     throw new Error("OTP_INVALID");
   }
 

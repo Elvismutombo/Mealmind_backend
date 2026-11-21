@@ -6,6 +6,8 @@ MealMind Backend is the server-side application powering the MealMind mobile exp
 
 - **Authentication & Authorization** – User registration, login, Google Sign-In, JWT authentication, and protected routes.
 - **Email Verification** – Email verification and password recovery workflows.
+- **Pending Registration** – Local accounts are persisted only after OTP verification.
+- **External Meals** – Cached TheMealDB recipes with French labels and translated instructions.
 - **User Management** – Profile management, password updates, and avatar uploads.
 - **AI Recipe Generation** – Generate personalized recipes based on available ingredients using Google Gemini.
 - **Recipe Management** – Create, retrieve, delete, and manage favorite recipes.
@@ -80,7 +82,16 @@ SMTP_HOST=
 SMTP_PORT=
 SMTP_USER=
 SMTP_PASS=
+
+# Set one translation provider for TheMealDB recipe instructions.
+DEEPL_AUTH_KEY=
+# Alternatively: GOOGLE_TRANSLATE_API_KEY=
 ```
+
+The TheMealDB proxy uses an in-memory cache with a one-hour TTL. Meal detail
+translations require either `DEEPL_AUTH_KEY` (optionally with `DEEPL_API_URL`)
+or `GOOGLE_TRANSLATE_API_KEY`; requests that need translation return a clear
+service-unavailable response when neither provider is configured.
 
 ### 4. Run the development server
 

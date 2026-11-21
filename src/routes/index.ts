@@ -5,6 +5,7 @@ import recipeRoutes from "../modules/recipes/recipe.routes.js";
 import shoppingListRoutes from "../modules/shopping-lists/shopping-list.routes.js";
 import quotaRoutes from "../modules/quotas/quota.routes.js";
 import subscriptionRoutes from "../modules/subscriptions/subscription.routes.js";
+import externalMealsRoutes from "../modules/external-meals/external-meals.routes.js";
 
 const router = Router();
 
@@ -15,6 +16,7 @@ router.use("/recipes", recipeRoutes);
 router.use("/shopping-lists", shoppingListRoutes);
 router.use("/quotas", quotaRoutes);
 router.use("/subscriptions", subscriptionRoutes);
+router.use("/external-meals", externalMealsRoutes);
 
 // Les autres modules seront ajoutés progressivement :
 // router.use("/users", userRoutes);
