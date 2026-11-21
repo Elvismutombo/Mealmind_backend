@@ -5,7 +5,11 @@ import { generateAccessToken } from "../../utils/jwt.js";
 import { hashPassword, comparePassword } from "../../utils/password.js";
 import { createRefreshSession } from "./session.service.js";
 
-import { sendVerificationCode } from "./email-verification.service.js";
+import PendingRegistration from "./pending-registration.model.js";
+import {
+  createPendingRegistration,
+  verifyPendingRegistration,
+} from "./pending-registration.service.js";
 import { OAuth2Client } from "google-auth-library";
 import type {
   AuthSession,
@@ -18,40 +22,66 @@ const googleClient = new OAuth2Client();
 export const registerUser = async (
   data: RegisterInput,
 ): Promise<RegistrationResult> => {
-  // Vérifier si l'utilisateur existe déjà
-  const existingUser = await User.findOne({
-    email: data.email,
-  }).select("+password");
+  const existingUser = await User.exists({ email: data.email });
 
   if (existingUser) {
     throw new Error("Cette adresse e-mail est déjà utilisée");
   }
 
-  // Hacher le mot de passe
-  const hashedPassword = await hashPassword(data.password);
-
-  // Créer le compte
-  const user = await User.create({
-    name: data.name,
+  const existingPending = await PendingRegistration.findOne({
     email: data.email,
-    password: hashedPassword,
-    authProvider: "local",
   });
+  if (existingPending && existingPending.expiresAt <= new Date()) {
+    await PendingRegistration.deleteOne({ _id: existingPending._id });
+  } else if (existingPending) {
+    throw new Error("Cette adresse e-mail est déjà utilisée");
+  }
 
-  await sendVerificationCode(user._id.toString());
+  const passwordHash = await hashPassword(data.password);
+  try {
+    await createPendingRegistration({
+      name: data.name,
+      email: data.email,
+      passwordHash,
+    });
+  } catch (error) {
+    if (
+      typeof error === "object" &&
+      error !== null &&
+      "code" in error &&
+      error.code === 11000
+    ) {
+      throw new Error("Cette adresse e-mail est déjà utilisée");
+    }
+    throw error;
+  }
 
-  const authUser: AuthUser = {
-    id: user._id.toString(),
-    name: user.name,
+  return { requiresEmailVerification: true };
+};
+
+export const verifyPendingRegistrationAndCreateSession = async (
+  email: string,
+  code: string,
+): Promise<AuthSession> => {
+  const user = await verifyPendingRegistration(email, code);
+  const accessToken = generateAccessToken({
+    sub: user._id.toString(),
     email: user.email,
-    avatar: user.avatar ?? null,
-    isEmailVerified: user.isEmailVerified,
     role: user.role,
-  };
+  });
+  const refreshToken = await createRefreshSession(user._id);
 
   return {
-    user: authUser,
-    requiresEmailVerification: true,
+    user: {
+      id: user._id.toString(),
+      name: user.name,
+      email: user.email,
+      avatar: user.avatar ?? null,
+      isEmailVerified: user.isEmailVerified,
+      role: user.role,
+    },
+    accessToken,
+    refreshToken,
   };
 };
 

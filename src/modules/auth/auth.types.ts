@@ -14,6 +14,5 @@ export interface AuthSession {
 }
 
 export interface RegistrationResult {
-  user: AuthUser;
   requiresEmailVerification: true;
 }

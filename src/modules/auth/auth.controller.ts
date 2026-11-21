@@ -1,7 +1,12 @@
 import type { Request, Response } from "express";
 import { registerSchema, loginSchema } from "./auth.validation.js";
 
-import { registerUser, loginUser, loginWithGoogle } from "./auth.service.js";
+import {
+  registerUser,
+  loginUser,
+  loginWithGoogle,
+  verifyPendingRegistrationAndCreateSession,
+} from "./auth.service.js";
 import {
   rotateRefreshSession,
   revokeRefreshSession,
@@ -10,8 +15,8 @@ import {
 import {
   sendVerificationCode,
   verifyEmailCode,
-  verifyEmailCodeByEmail,
 } from "./email-verification.service.js";
+import { resendPendingRegistrationCode } from "./pending-registration.service.js";
 
 import { z } from "zod";
 import User from "../users/user.model.js";
@@ -258,23 +263,28 @@ export const verifyEmail = async (req: Request, res: Response) => {
   }
 
   try {
-    const user = validation.data.userId
-      ? await verifyEmailCode(validation.data.userId, validation.data.code)
-      : await verifyEmailCodeByEmail(
-          validation.data.email!,
+    const result = validation.data.email
+      ? await verifyPendingRegistrationAndCreateSession(
+          validation.data.email,
+          validation.data.code,
+        )
+      : await verifyEmailCode(
+          validation.data.userId!,
           validation.data.code,
         );
 
     return res.status(200).json({
       success: true,
       message: "Adresse e-mail vérifiée avec succès",
-      data: { user },
+      data: result,
     });
   } catch (error) {
     const code = error instanceof Error ? error.message : "";
 
     const messages: Record<string, string> = {
       USER_NOT_FOUND: "Utilisateur introuvable",
+      PENDING_REGISTRATION_NOT_FOUND:
+        "Aucune inscription en attente pour cette adresse",
       EMAIL_ALREADY_VERIFIED: "Cette adresse est déjà vérifiée",
       OTP_NOT_FOUND: "Aucun code actif. Demande un nouveau code",
       OTP_EXPIRED: "Le code a expiré",
@@ -309,6 +319,17 @@ export const resendVerificationCode = async (req: Request, res: Response) => {
   }
 
   try {
+    const sentForPending = await resendPendingRegistrationCode(
+      validation.data.email,
+    );
+    if (sentForPending) {
+      return res.status(200).json({
+        success: true,
+        message:
+          "Si le compte existe et nécessite une vérification, un code sera envoyé.",
+      });
+    }
+
     const user = await User.findOne({
       email: validation.data.email,
     });
