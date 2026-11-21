@@ -36,3 +36,14 @@ export const sendEmail = async (
     },
   });
 };
+
+export const verifyEmailTransport = async (): Promise<boolean> => {
+  try {
+    await transporter.verify();
+    console.log("SMTP connection verified successfully.");
+    return true;
+  } catch (error) {
+    console.error("SMTP connection verification failed:", error);
+    return false;
+  }
+};
